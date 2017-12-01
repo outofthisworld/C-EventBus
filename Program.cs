@@ -1,13 +1,11 @@
-﻿using System;
+﻿using ConsoleApp2.Events;
+using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+using System.Reflection;
 
 namespace ConsoleApp2
 {
-
-
 
     //Default access modifer of internal 
     class Vector
@@ -51,12 +49,8 @@ namespace ConsoleApp2
         int x;
         int y;
 
-
-        public Vector(int x, int y)
-        {
-            X = x;
-            Y = y;
-        }
+        //Tuples can be assigned to...
+        public Vector(int x, int y) => (X,Y) = (x,y);
 
         //Operator overloading
         public static Vector operator +(Vector one, Vector two)
@@ -85,16 +79,23 @@ namespace ConsoleApp2
             return one + new Vector(1/two.X, 1/two.Y);
         }
 
-        //Expression syntax, defines a getter?
+        //Expression syntax, shorthand for
+        /*
+         * 
+         *   public (int, int) Tuple {
+         *   
+         *      get {
+         *          return (X,Y);
+         *      }
+         *   }
+         */
         public (int, int) Tuple => (X, Y);
 
-        //Returning a tuple from a method
+        //Returning a tuple from a method (Lambda in class)
         public (int, int) ToTuple() => Tuple;
 
 
-
-
-        //Return x by reference
+        //Return x by reference (X can be modified from outside class, without use of getters and setters(pointer))
         public ref int xRef
         {
             get
@@ -111,6 +112,12 @@ namespace ConsoleApp2
             }
         }
 
+        //Deconstruct into tuple (user defined type to tuple)
+        public void Deconstruct(out int x, out int y)
+        {
+            x = X;
+            y = Y;
+        }
 
         //Overridng virtual methods
         public override string ToString()
@@ -152,7 +159,7 @@ namespace ConsoleApp2
 
     class Animal
     {
-    
+        //Declare virtual so it can be overriden in subclasses.
         public virtual void Talk()
         {
             Console.WriteLine("Errrrr");
@@ -166,7 +173,193 @@ namespace ConsoleApp2
         {
             Console.WriteLine("Woof");
         }
- 
+    }
+
+    namespace Events
+    {
+
+        class EventObj
+        {
+            public string EventName = "EventObj";
+        }
+
+        class SupEventObj : EventObj
+        {
+            public new string EventName = "SupEventObj";
+        }
+
+        class EventObjAttr: System.Attribute
+        {
+
+        }
+
+        delegate void EventBusHandler<T>(T eventObj) where T : EventObj;
+
+        class TestEventObj
+        {
+
+            [EventObjAttr]
+            public void HandleEvent(SupEventObj s)
+            {
+                Console.WriteLine("TestEventObj handleEvent caled");
+            }
+
+        }
+
+        class EventBus
+        {
+
+            Dictionary<Type, List<Delegate>> hm = new Dictionary<Type, List<Delegate>>();
+
+            public EventBus()
+            {
+
+            }
+
+
+            public void RegisterHandler<T>(EventBusHandler<T> handler) where T:EventObj
+            {
+                Add(typeof(T), handler);
+            }
+
+            private void Add(Type t,dynamic val)
+            {
+                List<Delegate> l;
+                if (hm.TryGetValue(t, out l))
+                {
+                    l.Add(val);
+                }
+                else
+                {
+                    l = new List<Delegate>();
+                    l.Add(val);
+                    hm.Add(t, l);
+                }
+            }
+
+            public List<Delegate> this[Type t]
+            {
+                get
+                {
+                    List<Delegate> l;
+                    hm.TryGetValue(t, out l);
+                    return l;
+                }
+                set
+                {
+                    hm.Add(t, value);
+                }
+            }
+
+            public Delegate this[Type t, Delegate handler]
+            {
+                get
+                {
+                    List<Delegate> l;
+                    hm.TryGetValue(t, out l);
+                    
+
+                    foreach(Delegate d in l)
+                    {
+                        if (d != handler) continue;
+                        return d;
+                    }
+
+                    return null;
+                }
+
+            }
+
+            public Delegate this[Delegate handler]
+            {
+                get
+                {
+                    foreach(Type t in hm.Keys)
+                    {
+                        Delegate d = this[t, handler];
+                        if (d != null) return d;
+                    }
+                    return null;
+                }
+
+            }
+
+
+            public void RegisterHandler(object handler)
+            {
+
+                if (handler == null)
+                {
+                    throw new ArgumentException("Invalid argument, handler cannot be null");
+                }
+
+                MethodInfo[] methodInfos = handler.GetType().GetMethods();
+
+
+                foreach(MethodInfo info in methodInfos)
+                {
+
+                    //Skip the method because it does not contain the attribute that we are looking for
+                    if (info.CustomAttributes.Where((c) => c.AttributeType.Equals(typeof(EventObjAttr))).Count() <= 0) continue;
+
+                    //Get the parameters of the method
+                    ParameterInfo[] paramInfo = info.GetParameters();
+
+                    //One parameter is the right number, if the event method specifies more of less.. throw an exception.
+                    if(paramInfo.Length != 1)
+                    {
+                        throw new Exception(String.Format("Invalid event method attempting to be registered...number of paramaters must be one: {0}",info));
+                    }
+
+                    //Get the first parameter.
+                    ParameterInfo i = paramInfo[0];
+                    //Get the type of parameter
+                    Type t = i.ParameterType;
+
+                    //Check that it extends EventObj
+                    if(!typeof(EventObj).IsAssignableFrom(t))
+                    {
+                        throw new Exception(String.Format("Parameter {0} cannot be assigned to EventObj (event parameters must extend EventObj)", t));
+                    }
+
+
+                     //Creates a generic type using a delegate function signature and substiting in a Type t, and creates a delegate from the current method info on the current handler object
+                    Delegate del = Delegate.CreateDelegate(typeof(EventBusHandler<>).MakeGenericType(t), handler, info);
+                    Add(t, del);
+                }
+            }
+
+            public int Fire<T>(T e) where T:EventObj
+            {
+                Type t = typeof(T);
+
+                List<Delegate> handlers;
+
+                if (hm.TryGetValue(t,out handlers))
+                {
+                    foreach(Delegate handler in handlers){
+                        try
+                        {
+                             handler?.DynamicInvoke(e);
+                        }catch(Exception ex)
+                        {
+                            Console.WriteLine(ex);
+                            throw ex;
+                        }
+                    }
+
+                    return handlers.Count;
+                }
+
+                return 0;
+            }
+        }
+
+
+        class EventBusWithAttr
+        {
+
+        }
     }
 
 
@@ -186,6 +379,11 @@ namespace ConsoleApp2
             v.VectorValueChanged += (o) => Console.WriteLine("Vec changed1");
             v.X = 2;
 
+            //Deconstruct a user defined type.
+            (int ff,int dd) = v;
+            Console.WriteLine("Deconstructed x {0}", ff);
+            Console.WriteLine("Deconstructed y {0}", dd);
+            
 
             Vector x = new Vector(20, 20);
 
@@ -213,6 +411,56 @@ namespace ConsoleApp2
 
             var tuple = v.Tuple;
             var (g, k) = tuple;
+
+            EventObj tt = new EventObj();
+            SupEventObj qq = new SupEventObj();
+            EventObj pp = qq;
+
+            Console.WriteLine(tt.GetType());
+            Console.WriteLine(qq.GetType());
+            Console.WriteLine(pp.GetType());
+
+            EventBus eventBus = new EventBus();
+            eventBus.RegisterHandler((EventObj e) => Console.WriteLine("Recieved event {0}",e.EventName));
+            eventBus.RegisterHandler((SupEventObj e) => Console.WriteLine("Recieved event {0}" ,e.EventName));
+            //eventBus.RegisterEventHandler(delegate (SupEventObj e) { Console.WriteLine("Recieved event {0}", e.EventName); });
+            eventBus.RegisterHandler<EventObj>(Take);
+            EventBusHandler<EventObj> eee = new EventBusHandler<EventObj>(Take);
+            eventBus.RegisterHandler(eee);
+
+            //EventObj event
+            eventBus.Fire(tt);
+            System.Threading.Thread.Sleep(1000);
+            //SupEventObj event
+            eventBus.Fire(qq);
+            System.Threading.Thread.Sleep(1000);
+            //SupEventObj event
+            eventBus.Fire(pp);
+
+            //Register handler object with event bus
+            eventBus.RegisterHandler(new TestEventObj());
+            //All methods with attributes [EventBusAttr] are registered as handlers, under the type of param in which the method accepts
+            //When an event of the matching type of param the method accepts is fired.. that method is called.
+            eventBus.Fire(qq);
+
+            Delegate ppp = eventBus[typeof(EventObj), eee];
+            Console.WriteLine("ppp is : {0}", ppp);
+            Console.WriteLine("Invoking event");
+            ppp.DynamicInvoke(tt);
+
+            //Reset all events for the specified type
+            eventBus[typeof(EventObj)] = new List<Delegate>();
+            //Retrieve all handlers for a specific type of event
+            List<Delegate> handlersOfType = eventBus[typeof(EventObj)];
+            //Retrieve a delegate that has been added using RegisterEventHandler
+            Delegate de = eventBus[typeof(EventObj), eee];
+            //Search for a delegate without type (slower, traverses hm keys) o(n^2)
+            Delegate dede = eventBus[ eee];
+        }
+
+        public static void Take(EventObj o)
+        {
+            Console.WriteLine("Take");
         }
     }
 }
